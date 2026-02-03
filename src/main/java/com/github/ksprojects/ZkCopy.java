@@ -5,7 +5,11 @@ import com.github.ksprojects.zkcopy.Node;
 import com.github.ksprojects.zkcopy.reader.Reader;
 import com.github.ksprojects.zkcopy.writer.Writer;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+
 import org.apache.log4j.Logger;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -20,7 +24,7 @@ public class ZkCopy implements Callable<Void> {
     private static final boolean DEFAULT_IGNORE_EPHEMERAL_NODES = true;
     private static final int DEFAULT_BATCH_SIZE = 1000;
 
-    @Option(names = "--help", usageHelp = true, description = "display this help and exit")
+    @Option(names = {"-h","--help"}, usageHelp = true, description = "display this help and exit")
     boolean help;
     
     @Option(names = { "-s", "--source" }, 
@@ -34,6 +38,12 @@ public class ZkCopy implements Callable<Void> {
             required = true, 
             description = "target location")
     String target;
+
+    @Option(names = { "-tup", "--targetUsernamePassword" },
+            paramLabel = "username:password",
+            required = false,
+            description = "target username:password")
+    String targetUsernamePassword;
 
     @Option(names = { "-w", "--workers" }, 
             description = "number of concurrent workers to copy data")
@@ -81,6 +91,26 @@ public class ZkCopy implements Callable<Void> {
             ZooKeeper zookeeper = null;
             try {
                 zookeeper = new ZooKeeper(zkHost(target), sessionTimeout, new LoggingWatcher());
+
+                if (targetUsernamePassword != null && !targetUsernamePassword.trim().isEmpty()) {
+                    // 等待连接建立
+                    final CountDownLatch connectedLatch = new CountDownLatch(1);
+                    Watcher connectionWatcher = new Watcher() {
+                        @Override
+                        public void process(WatchedEvent event) {
+                            if (event.getState() == Event.KeeperState.SyncConnected) {
+                                connectedLatch.countDown();
+                            }
+                        }
+                    };
+                    zookeeper.register(connectionWatcher);
+                    connectedLatch.await();
+
+                    // 添加认证信息（格式通常是 "username:password"）
+                    String authString = targetUsernamePassword;
+                    zookeeper.addAuthInfo("digest", authString.getBytes());
+                }
+
                 Writer writer = new Writer(zookeeper, zkPath(target), root, removeDeprecatedNodes, ignoreEphemeralNodes,
                         mtime, batchSize);
                 writer.write();
